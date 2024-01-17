@@ -80,7 +80,7 @@ class Server:
 
 
 class TLDServer(Server):
-    def resolve(self, message):
+    def resolve(self, message) -> Message:
         print(f"> #TLDServer : Resolving from {self.ip} ({self.name})")
         print(f"> #TLDServer : Looking for a Authoritative NS for {message.question.qname}")
         answer = self.zone.search_record(self.zone.search_record(message.question.qname, RRType.NS).rdata, RRType.A)
@@ -90,6 +90,22 @@ class TLDServer(Server):
         message.answers.append(answer)
 
         return message
+
+    def recursive_resolve(self, message: Message, network) -> Message:
+        print(f"> #TLDServer (R) : Resolving from {self.ip} ({self.name})")
+        print(f"> #TLDServer (R) : Looking for a Authoritative NS for {message.question.qname}")
+        answer = self.zone.search_record(self.zone.search_record(message.question.qname, RRType.NS).rdata, RRType.A)
+
+        message.header.qr = 1  # answering
+        message.header.ancount += 1
+        message.answers.append(answer)
+
+        print(f"> #TLDServer (R) : contacting the AuthoritativeServer")
+        server = network.get_instance(message.answers[-1].rdata, 'authoritative')
+        message.header.qr = 0
+        response = server.resolve(message)
+
+        return response
 
 
 class AuthoritativeServer(Server):
@@ -116,10 +132,8 @@ class RootServer(Server):
                 tlds_ns.append(record)
 
         tlds_a = []
-        excludes = ['b0.org.afilias-nst.org.', 'a2.org.afilias-nst.info.', 'c0.org.afilias-nst.info.']
         for rr in tlds_ns:
-            if rr.rdata not in excludes:
-                tlds_a.append(self.zone.search_record(rr.rdata, RRType.A))
+            tlds_a.append(self.zone.search_record(rr.rdata, RRType.A))
 
         print(f"> #RootServer : Found {len(tlds_a)} ({tld}) TLDServers for {qname}")
         return random.choice(tlds_a)
@@ -134,6 +148,22 @@ class RootServer(Server):
         message.answers.append(answer)
 
         return message
+
+    def recursive_resolve(self, message: Message, network) -> Message:
+        print(f"> #RootServer (R) : Resolving from {self.ip} ({self.name})")
+        print(f"> #RootServer (R) : Looking for a TLD NS for {message.question.qname}")
+        answer = self.find_tld(message.question.qname)
+
+        message.header.qr = 1  # answering
+        message.header.ancount += 1
+        message.answers.append(answer)
+
+        print(f"> #RootServer (R) : contacting the TLDServer")
+        tld = network.get_instance(message.answers[-1].rdata, 'tld')
+        message.header.qr = 0
+        response = tld.recursive_resolve(message, network)
+
+        return response
 
 
 class Network:
@@ -187,11 +217,13 @@ class Network:
 
         # making tlds server aware of authoritative servers
         for tld_server in self.tld_servers:
+            rtld = zone.search_record(tld_server.name, RRType.NS)
+
             for authoritative_server in self.authoritative_servers:
                 tld_server.zone.add_record(authoritative_server.to_record())
 
             for record in zone.records:
-                if record.name.split('.')[-1] + '.' == tld_server.get_tld() and record.rtype == RRType.NS:
+                if record.name.split('.')[-1] + '.' == rtld.name and record.rtype == RRType.NS:
                     tld_server.zone.add_record(record)
 
         # making authoritative server aware of hosts

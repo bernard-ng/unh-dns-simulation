@@ -1,11 +1,14 @@
-import os
+import sys, os
 import random
 import re
+import timeit
 
 import requests
 from faker import Faker
 from tld import get_tld
 from tqdm import tqdm
+import pandas as pd
+import matplotlib.pyplot as plt
 
 from dns import Zone, Network
 from message import RR, RRType, RRClass
@@ -19,17 +22,17 @@ def generate_hosts_records(base_zone: Zone) -> list[RR]:
     hosts_records: list[RR] = []
 
     with tqdm(total=10000, desc="Generating Domains") as pbar:
-        while len(hosts_records) < 10000:
+        while len(hosts_records) < 200:
             root_domain = fake.domain_name(levels=1)
             if root_domain not in domains:
                 domains.add(root_domain)
-
                 hosts_records.append(RR(root_domain, RRType.A, RRClass.IN, 3600, fake.ipv4_public(address_class='a')))
 
             pbar.update(1)
 
     authoritatives_a_records = [
-        RR(f'ns{i}.auth-server.net', RRType.A, RRClass.IN, 3600, fake.ipv4_public(address_class='a')) for i in range(1, 11)
+        RR(f'ns{i}.auth-server.net', RRType.A, RRClass.IN, 3600, fake.ipv4_public(address_class='a')) for i in
+        range(1, 11)
     ]
 
     authoritatives_ns_records = []
@@ -79,7 +82,54 @@ if __name__ == '__main__':
 
     network = Network()
     network.initialize_network(zone)
+    resolver = Resolver(zone, network)
 
-    resolver = Resolver(zone, network, ResolutionStrategy.ITERATIVE)
-    resolver.resolve('klein.org')
+    option = input("Options (\n1. resolve a domain, \n2. compare strategies, \n3. see available domains): ")
+
+    if option == '1':
+        domain = input("Enter a domain to resolve : ")
+        strategy = int(input("Strategy (1. Iterative, 2. Recursive): "))
+        resolver.resolve(domain, strategy, True)
+
+    elif option == '2':
+        domain = input("Enter a domain to resolve : ")
+        strategies = [ResolutionStrategy.ITERATIVE, ResolutionStrategy.RECURSIVE]
+        results = {'strategy': [], 'iteration': [], 'time_taken': []}
+        for strategy in strategies:
+            for iteration in range(1, 1001):
+                try:
+                    time_taken = timeit.timeit(lambda: resolver.resolve(domain, strategy, False), number=1)
+                    results['strategy'].append(strategy)
+                    results['time_taken'].append(time_taken)
+                    results['iteration'].append(iteration)
+                except Exception:
+                    pass
+
+        # Create a DataFrame
+        df = pd.DataFrame(results)
+        df.to_csv(f'./data/resolution_times_{domain}.csv', index=False)
+
+        sys.stdout = sys.__stdout__
+        avg_times = df.groupby('strategy')['time_taken'].mean()
+        print(avg_times)
+
+        plt.figure(figsize=(10, 6))
+        for strategy in strategies:
+            strategy_df = df[df['strategy'] == strategy]
+            plt.plot(strategy_df['iteration'], strategy_df['time_taken'], label=str(strategy))
+
+        plt.title('DNS Resolution Time Distribution')
+        plt.xlabel('Iteration')
+        plt.ylabel('Time taken (seconds)')
+        plt.legend()
+        plt.show()
+
+    elif option == '3':
+        counter = 0
+        for record in zone.records:
+            if record.rtype == 'A':
+                print(record.name)
+                counter += 1
+                if counter == 100:
+                    break
 
